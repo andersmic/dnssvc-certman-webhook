@@ -1,0 +1,302 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dnssvc-webhook
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dnssvc-webhook
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - "secrets"
+    verbs:
+      - "get"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dnssvc-webhook:flowcontrol-solver
+  labels:
+    app: dnssvc-webhook
+rules:
+  - apiGroups:
+      - "flowcontrol.apiserver.k8s.io"
+    resources:
+      - "prioritylevelconfigurations"
+      - "flowschemas"
+    verbs:
+      - "list"
+      - "watch"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dnssvc-webhook:flowcontrol-solver
+  labels:
+    app: dnssvc-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dnssvc-webhook:flowcontrol-solver
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: dnssvc-webhook
+    namespace: cert-manager
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dnssvc-webhook
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dnssvc-webhook
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: dnssvc-webhook
+    namespace: cert-manager
+
+---
+# Grant the webhook permission to read the ConfigMap containing the Kubernetes
+# apiserver's requestheader-ca-certificate.
+# This ConfigMap is automatically created by the Kubernetes apiserver.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dnssvc-webhook:webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app: dnssvc-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: dnssvc-webhook
+    namespace: cert-manager
+---
+# apiserver gets the auth-delegator role to delegate auth decisions to
+# the core apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dnssvc-webhook:auth-delegator
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: dnssvc-webhook
+    namespace: cert-manager
+---
+# Grant cert-manager permission to validate using our apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dnssvc-webhook:domain-solver
+  labels:
+    app: dnssvc-webhook
+rules:
+  - apiGroups:
+      - acme.pianosalabs.eu
+    resources:
+      - "*"
+    verbs:
+      - "create"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dnssvc-webhook:domain-solver
+  labels:
+    app: dnssvc-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dnssvc-webhook:domain-solver
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+
+---
+# Source: dnssvc-webhook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: dnssvc-webhook
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app: dnssvc-webhook
+
+---
+# Source: dnssvc-webhook/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dnssvc-webhook
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dnssvc-webhook
+  template:
+    metadata:
+      labels:
+        app: dnssvc-webhook
+    spec:
+      serviceAccountName: dnssvc-webhook
+      containers:
+        - name: dnssvc-webhook
+          image: andersmic/cert-manager-webhook-dnsservices:0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: GROUP_NAME
+              value: "acme.pianosalabs.eu"
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources: {}
+
+      volumes:
+        - name: certs
+          secret:
+            secretName: dnssvc-webhook-webhook-tls
+
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.pianosalabs.eu
+  labels:
+    app: dnssvc-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: "cert-manager/dnssvc-webhook-webhook-tls"
+spec:
+  group: acme.pianosalabs.eu
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: dnssvc-webhook
+    namespace: cert-manager
+  version: v1alpha1
+
+---
+# Create a selfsigned Issuer, in order to create a root CA certificate for
+# signing webhook serving certificates
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: dnssvc-webhook-selfsign
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  selfSigned: {}
+
+---
+# Generate a CA Certificate used to sign certificates for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dnssvc-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  secretName: dnssvc-webhook-ca
+  duration: 43800h # 5y
+  issuerRef:
+    name: dnssvc-webhook-selfsign
+  commonName: "ca.dnssvc-webhook.cert-manager"
+  isCA: true
+
+---
+# Create an Issuer that uses the above generated CA certificate to issue certs
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: dnssvc-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  ca:
+    secretName: dnssvc-webhook-ca
+
+---
+# Finally, generate a serving certificate for the webhook to use
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dnssvc-webhook-webhook-tls
+  namespace: cert-manager
+  labels:
+    app: dnssvc-webhook
+spec:
+  secretName: dnssvc-webhook-webhook-tls
+  duration: 8760h # 1y
+  issuerRef:
+    name: dnssvc-webhook-ca
+  dnsNames:
+    - dnssvc-webhook
+    - dnssvc-webhook.cert-manager
+    - dnssvc-webhook.cert-manager.svc
+    - dnssvc-webhook.cert-manager.svc.cluster.local

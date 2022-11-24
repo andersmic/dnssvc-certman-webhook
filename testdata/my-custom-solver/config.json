@@ -1,0 +1,10 @@
+{
+  "usernameSecretKeyRef": {
+    "name": "dns-services-secret",
+    "key": "username"
+  },
+  "passwordSecretKeyRef": {
+    "name": "dns-services-secret",
+    "key": "password"
+  }
+}
