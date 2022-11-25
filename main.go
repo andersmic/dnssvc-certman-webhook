@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/andersmic/cert-manager-webhook-dnsservices/dnsSvc"
+	"github.com/andersmic/cert-manager-webhook-dnsservices/dnssvc"
 	cmmeta "github.com/jetstack/cert-manager/pkg/apis/meta/v1"
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,10 +55,6 @@ type credential struct {
 	Password string
 }
 
-type loopiaDNSProviderConfig struct {
-	// These fields will be set by users in the `issuer.spec.acme.dns01.providers.webhook.config` field.
-}
-
 // Name is used as the name for this DNS solver when referencing it on the ACME
 // Issuer resource.
 // This should be unique **within the group name**, i.e. you can have two
@@ -91,7 +87,7 @@ func (c *dnsServicesDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) er
 	}
 	klog.Infof("Decoded credentials: %v", creds)
 
-	addErr := AddDNSRecord(creds, &cfg, ch)
+	addErr := addDNSRecord(creds, ch)
 	if addErr != nil {
 		return addErr
 	}
@@ -115,16 +111,19 @@ func (c *dnsServicesDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) er
 		return err
 	}
 
-	// Get credentials for connecting to Loopia.
+	// Get credentials for connecting to dns.Services
 	creds, err := c.getCredentials(&cfg, ch.ResourceNamespace)
 	if err != nil {
 		return fmt.Errorf("unable to get credential: %v", err)
 	}
 	klog.Infof("Decoded credentials: %v", creds)
 
-	// TODO: add code that deletes a record from the DNS provider's console
 	klog.Infof("Cleanup dnsServices Domain %s.%s", ch.ResolvedZone, ch.ResolvedFQDN)
-	RemoveDNSRecord(creds, &cfg, ch)
+	rmErr := removeDNSRecord(creds, ch)
+	if rmErr != nil {
+		klog.Errorf("Error removing dns record: %s", rmErr)
+		return rmErr
+	}
 	klog.Infof("Cleanup record %v", ch.ResolvedFQDN)
 	return nil
 }
@@ -198,7 +197,7 @@ func (c *dnsServicesDNSProviderSolver) getCredentials(cfg *dnsServicesDNSProvide
 	return &creds, nil
 }
 
-func findZone(dnsClient *dnsSvc.DnsSvcClient, name string) (*dnsSvc.ZoneRec, error) {
+func findZone(dnsClient *dnssvc.DnsSvcClient, name string) (*dnssvc.ZoneRec, error) {
 	services, err := dnsClient.LoadDNS()
 	if err != nil {
 		return nil, err
@@ -206,9 +205,9 @@ func findZone(dnsClient *dnsSvc.DnsSvcClient, name string) (*dnsSvc.ZoneRec, err
 	return services.GetZoneByName(name), nil
 }
 
-func AddDNSRecord(cred *credential, config *dnsServicesDNSProviderConfig, ch *v1alpha1.ChallengeRequest) error {
+func addDNSRecord(cred *credential, ch *v1alpha1.ChallengeRequest) error {
 	klog.Infof("Add DNS TXT entry %s := %s", ch.ResolvedFQDN, ch.Key)
-	dnsClient := dnsSvc.DnsSvcClient{}
+	dnsClient := dnssvc.DnsSvcClient{}
 	loginErr := dnsClient.Login(cred.Username, cred.Password)
 	if loginErr != nil {
 		return loginErr
@@ -222,11 +221,12 @@ func AddDNSRecord(cred *credential, config *dnsServicesDNSProviderConfig, ch *v1
 		return err
 	}
 
-	txt := dnsSvc.DNSRecord{}
-	txt.Name = entry
-	txt.Ttl = "3600"
-	txt.Type = "TXT"
-	txt.Content = ch.Key
+	txt := dnssvc.DNSRecord{
+		Name:    entry,
+		Ttl:     "3600",
+		Type:    "TXT",
+		Content: ch.Key,
+	}
 
 	klog.Infof("Adding record %v", txt)
 	addErr := dnsClient.AddRecord(zone, &txt)
@@ -239,10 +239,10 @@ func AddDNSRecord(cred *credential, config *dnsServicesDNSProviderConfig, ch *v1
 	return nil
 }
 
-func RemoveDNSRecord(cred *credential, config *dnsServicesDNSProviderConfig, ch *v1alpha1.ChallengeRequest) error {
+func removeDNSRecord(cred *credential, ch *v1alpha1.ChallengeRequest) error {
 	klog.Infof("Removing DNS TXT entry %s", ch.ResolvedFQDN)
 
-	dnsClient := dnsSvc.DnsSvcClient{}
+	dnsClient := dnssvc.DnsSvcClient{}
 	loginErr := dnsClient.Login(cred.Username, cred.Password)
 	if loginErr != nil {
 		return loginErr

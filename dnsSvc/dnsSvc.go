@@ -1,4 +1,4 @@
-package dnsSvc
+package dnssvc
 
 import (
 	"bytes"
