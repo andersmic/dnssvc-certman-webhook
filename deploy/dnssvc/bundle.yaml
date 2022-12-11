@@ -187,7 +187,7 @@ spec:
       serviceAccountName: dnssvc-webhook
       containers:
         - name: dnssvc-webhook
-          image: andersmic/cert-manager-webhook-dnsservices:0.1.0
+          image: andersmic/cert-manager-webhook-dnsservices:1670789394
           imagePullPolicy: IfNotPresent
           args:
             - --tls-cert-file=/tls/tls.crt
@@ -214,7 +214,6 @@ spec:
               mountPath: /tls
               readOnly: true
           resources: {}
-
       volumes:
         - name: certs
           secret:
